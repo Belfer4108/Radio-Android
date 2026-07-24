@@ -1,0 +1,40 @@
+# Gradle
+.gradle/
+build/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+.navigation/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Local machine configuration
+local.properties
+keystore.properties
+keystore/
+*.jks
+*.keystore
+*.p12
+*.pem
+
+# Kotlin / Android tooling
+.kotlin/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local assistant/tooling state
+.agents/
+.codex/
+
+# Temporary/log files
+*.log
+*.tmp
+*.bak
