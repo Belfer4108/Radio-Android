@@ -48,6 +48,8 @@ android {
 
     buildTypes {
         release {
+            isDebuggable = false
+            isMinifyEnabled = false
             if (hasReleaseKeystore) {
                 signingConfig = signingConfigs.getByName("release")
             }

@@ -84,6 +84,132 @@ Never commit `keystore.properties`, `keystore/`, `.jks`, `.keystore`, `.p12`, or
 
 If no `keystore.properties` file exists, the project remains suitable for public source sharing and debug builds.
 
+### Create a private release key
+
+Create the key outside the repository or in a local ignored `keystore/` directory:
+
+```powershell
+New-Item -ItemType Directory -Force keystore
+keytool -genkeypair `
+  -v `
+  -keystore keystore/release-key.jks `
+  -storetype JKS `
+  -keyalg RSA `
+  -keysize 4096 `
+  -validity 10000 `
+  -alias release
+```
+
+Use a strong password and store the `.jks` file in a private backup location, for example an encrypted drive or password manager attachment. Do not store the only copy inside the Git working directory.
+
+All future app updates for the same `applicationId` must be signed with the same release key. If you lose the key, users will not be able to install future APKs as updates over the old APK.
+
+Local `keystore.properties` example:
+
+```properties
+storeFile=keystore/release-key.jks
+storePassword=your-private-password
+keyAlias=release
+keyPassword=your-private-password
+```
+
+### Encode the keystore for GitHub Actions
+
+GitHub Actions receives the keystore as a Base64 secret. On Windows PowerShell:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("keystore\release-key.jks")) | Set-Clipboard
+```
+
+This copies the Base64 value to the clipboard. Paste it only into GitHub Secrets.
+
+### GitHub Secrets
+
+In the GitHub repository, open:
+
+`Settings -> Secrets and variables -> Actions -> New repository secret`
+
+Add exactly these four secrets:
+
+- `ANDROID_KEYSTORE_BASE64`: Base64 text generated from `release-key.jks`.
+- `ANDROID_KEYSTORE_PASSWORD`: keystore password.
+- `ANDROID_KEY_ALIAS`: key alias, for example `release`.
+- `ANDROID_KEY_PASSWORD`: key password.
+
+The workflow reconstructs `keystore/release-key.jks` and `keystore.properties` during the build. It does not print secrets to logs.
+
+## GitHub Releases
+
+The release workflow is defined in `.github/workflows/android-release.yml`.
+
+It runs:
+
+- manually from the GitHub Actions tab through `workflow_dispatch`;
+- automatically when a tag matching `v*` is pushed, for example `v1.0.0`.
+
+The workflow:
+
+- checks out the repository;
+- configures JDK 17;
+- runs Gradle tests with `./gradlew test`;
+- builds a signed release APK with `./gradlew assembleRelease`;
+- uploads the APK as a workflow artifact;
+- for tags, creates a GitHub Release and attaches the APK.
+
+The APK name is generated as:
+
+```text
+Radio-Internetowe-v<version>.apk
+```
+
+For a tag `v1.0.0`, the file will be:
+
+```text
+Radio-Internetowe-v1.0.0.apk
+```
+
+### Versioning
+
+Before every public release, update both values in `app/build.gradle.kts`:
+
+```kotlin
+versionCode = 2
+versionName = "1.0.1"
+```
+
+Rules:
+
+- `versionCode` must increase for every Android update.
+- `versionName` is the user-visible version.
+- Keep `applicationId = "com.radiopolska"` unchanged so new APKs install as updates.
+
+### Create and push a release tag
+
+After committing the version change:
+
+```powershell
+git tag v1.0.0
+git push origin main
+git push origin v1.0.0
+```
+
+GitHub Actions will build the signed APK and create a Release for the tag.
+
+### Download and install the APK
+
+Users can download the APK from:
+
+`GitHub -> repository -> Releases -> selected version -> Assets`
+
+To install:
+
+1. Download `Radio-Internetowe-vX.Y.Z.apk` on the Android device.
+2. Open the file.
+3. If Android asks, allow installation from the browser/file manager used to open the APK.
+4. Confirm installation.
+
+For updates, the APK must be signed with the same release key as the previous installed version.
+
 ## Permissions
 
 The app declares permissions needed for radio playback, background media service, alarms, notifications, recording helpers, colorofon, and ringtone export:
