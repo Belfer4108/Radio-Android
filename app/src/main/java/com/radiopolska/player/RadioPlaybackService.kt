@@ -31,6 +31,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.extractor.metadata.icy.IcyInfo
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaNotification
@@ -138,7 +139,22 @@ class RadioPlaybackService : MediaSessionService() {
                 }
             },
         )
-        exoPlayer = ExoPlayer.Builder(this).build()
+        exoPlayer = ExoPlayer.Builder(this)
+            .setLoadControl(
+                DefaultLoadControl.Builder()
+                    .setBufferDurationsMs(
+                        MIN_BUFFER_MS,
+                        MAX_BUFFER_MS,
+                        BUFFER_FOR_PLAYBACK_MS,
+                        BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
+                    )
+                    .setPrioritizeTimeOverSizeThresholds(true)
+                    .build(),
+            )
+            .build()
+        restoreSavedState(this)
+        restoreActiveStationFromState()
+        exoPlayer.volume = _state.value.volume
         exoPlayer.setWakeMode(C.WAKE_MODE_NETWORK)
         createPlaybackNotificationChannel()
         setMediaNotificationProvider(
@@ -370,8 +386,30 @@ class RadioPlaybackService : MediaSessionService() {
         mediaSession?.release()
         mediaSession = null
         exoPlayer.release()
-        _state.value = RadioPlayerState()
+        _state.update {
+            it.copy(
+                isPlaying = false,
+                isBuffering = false,
+                isRecording = false,
+                status = if (it.currentStation != null) "Gotowe" else "Wybierz stację",
+                alarmActive = false,
+                alarmStationId = null,
+            )
+        }
         super.onDestroy()
+    }
+
+    private fun restoreActiveStationFromState() {
+        val station = _state.value.currentStation ?: return
+        activeStation = station
+        activeUrls = station.streamUrls.ifEmpty {
+            listOfNotNull(station.streamUrl, station.fallbackStreamUrl)
+        }.distinct()
+        activeIndex = _state.value.streamIndex.coerceAtLeast(0)
+        val stationIndex = PolishRadioStations.indexOfFirst { it.id == station.id }
+        if (stationIndex >= 0) {
+            exoPlayer.setMediaItems(PolishRadioStations.map(::stationMediaItem), stationIndex, C.TIME_UNSET)
+        }
     }
 
     private fun attachPlayerDiagnostics() {
@@ -438,6 +476,7 @@ class RadioPlaybackService : MediaSessionService() {
                         listOfNotNull(station.streamUrl, station.fallbackStreamUrl)
                     }.distinct()
                     activeIndex = 0
+                    saveLastStation(this@RadioPlaybackService, station.id)
                     _state.update {
                         it.copy(
                             currentStation = station,
@@ -454,6 +493,7 @@ class RadioPlaybackService : MediaSessionService() {
 
     private fun play(station: RadioStation) {
         Log.d(TAG, "play: station=${station.id}, name=${station.name}")
+        saveLastStation(this, station.id)
         reconnectRunnable?.let(statsHandler::removeCallbacks)
         reconnectRunnable = null
         reconnectAttempts = 0
@@ -544,6 +584,9 @@ class RadioPlaybackService : MediaSessionService() {
             _state.update { it.copy(isPlaying = false, status = "Pauza") }
         } else if (activeStation != null) {
             Log.d(TAG, "resume: station=${activeStation?.id}")
+            if (exoPlayer.playbackState == Player.STATE_IDLE) {
+                exoPlayer.prepare()
+            }
             exoPlayer.play()
             _state.update { it.copy(status = "Odtwarzanie") }
         } else {
@@ -599,6 +642,7 @@ class RadioPlaybackService : MediaSessionService() {
         Log.d(TAG, "setVolume: volume=$volume")
         exoPlayer.volume = volume
         _state.update { it.copy(volume = volume) }
+        savePlaybackPreferences(this, _state.value)
     }
 
     private fun cancelSleepTimer() {
@@ -621,6 +665,7 @@ class RadioPlaybackService : MediaSessionService() {
     private fun setEqualizerEnabled(enabled: Boolean) {
         Log.d(TAG, "setEqualizerEnabled: enabled=$enabled")
         _state.update { it.copy(equalizerEnabled = enabled) }
+        savePlaybackPreferences(this, _state.value)
         rebuildAudioEffects()
     }
 
@@ -634,6 +679,7 @@ class RadioPlaybackService : MediaSessionService() {
                 equalizerBands = preset,
             )
         }
+        savePlaybackPreferences(this, _state.value)
         rebuildAudioEffects()
     }
 
@@ -650,12 +696,14 @@ class RadioPlaybackService : MediaSessionService() {
                 equalizerBands = bands,
             )
         }
+        savePlaybackPreferences(this, _state.value)
         applyEqualizerLevels()
     }
 
     private fun setColorofonEnabled(enabled: Boolean) {
         Log.d(TAG, "setColorofonEnabled: enabled=$enabled")
         _state.update { it.copy(colorofonEnabled = enabled) }
+        savePlaybackPreferences(this, _state.value)
         rebuildVisualizer()
         if (!enabled) {
             torchOffRunnable?.let(statsHandler::removeCallbacks)
@@ -668,6 +716,7 @@ class RadioPlaybackService : MediaSessionService() {
         val bounded = intensity.coerceIn(-100, 100)
         Log.d(TAG, "setColorofonIntensity: intensity=$bounded")
         _state.update { it.copy(colorofonIntensity = bounded) }
+        savePlaybackPreferences(this, _state.value)
     }
 
     private fun setColorofonBand(band: String, level: Int) {
@@ -681,6 +730,7 @@ class RadioPlaybackService : MediaSessionService() {
                 else -> it
             }
         }
+        savePlaybackPreferences(this, _state.value)
     }
 
     private fun rebuildAudioEffects() {
@@ -758,6 +808,7 @@ class RadioPlaybackService : MediaSessionService() {
         }.onFailure { error ->
             Log.e(TAG, "visualizer unavailable: ${error.message}", error)
             _state.update { it.copy(colorofonEnabled = false) }
+            savePlaybackPreferences(this, _state.value)
             setTorch(false)
         }
     }
@@ -1194,8 +1245,23 @@ class RadioPlaybackService : MediaSessionService() {
         private const val EXTRA_INTENSITY = "intensity"
         private const val STATS_TICK_MS = 1000L
         private const val MAX_RECONNECT_ATTEMPTS = 5
+        private const val MIN_BUFFER_MS = 30_000
+        private const val MAX_BUFFER_MS = 90_000
+        private const val BUFFER_FOR_PLAYBACK_MS = 3_000
+        private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 6_000
         private const val MEDIA_NOTIFICATION_ID = 1001
         private const val MEDIA_NOTIFICATION_CHANNEL_ID = "default_channel_id"
+        private const val PREFS_NAME = "radio_polska_preferences"
+        private const val LAST_STATION_KEY = "last_station_id"
+        private const val VOLUME_KEY = "player_volume"
+        private const val EQUALIZER_ENABLED_KEY = "equalizer_enabled"
+        private const val EQUALIZER_PRESET_KEY = "equalizer_preset"
+        private const val EQUALIZER_BANDS_KEY = "equalizer_bands"
+        private const val COLOROFON_ENABLED_KEY = "colorofon_enabled"
+        private const val COLOROFON_INTENSITY_KEY = "colorofon_intensity"
+        private const val COLOROFON_BASS_KEY = "colorofon_bass"
+        private const val COLOROFON_MID_KEY = "colorofon_mid"
+        private const val COLOROFON_TREBLE_KEY = "colorofon_treble"
         val EqualizerPresets: Map<String, List<Int>> = mapOf(
             "Flat" to listOf(0, 0, 0, 0, 0),
             "Bass" to listOf(8, 5, 1, 0, -2),
@@ -1209,6 +1275,62 @@ class RadioPlaybackService : MediaSessionService() {
 
         private val _state = MutableStateFlow(RadioPlayerState())
         val state: StateFlow<RadioPlayerState> = _state
+
+        fun restoreSavedState(context: Context) {
+            val snapshot = _state.value
+            if (snapshot.currentStation != null || snapshot.isPlaying || snapshot.isBuffering) return
+            _state.value = loadSavedPlayerState(context)
+        }
+
+        private fun loadSavedPlayerState(context: Context): RadioPlayerState {
+            val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val stationId = preferences.getString(LAST_STATION_KEY, null)
+            val station = PolishRadioStations.firstOrNull { it.id == stationId }
+            val preset = preferences.getString(EQUALIZER_PRESET_KEY, "Flat").orEmpty()
+                .takeIf { it in EQUALIZER_PRESETS }
+                ?: "Flat"
+            val defaultBands = EQUALIZER_PRESETS.getValue(preset)
+            val bands = preferences.getString(EQUALIZER_BANDS_KEY, null)
+                ?.split(",")
+                ?.mapNotNull { it.toIntOrNull()?.coerceIn(-12, 12) }
+                ?.takeIf { it.size == defaultBands.size }
+                ?: defaultBands
+            return RadioPlayerState(
+                currentStation = station,
+                volume = preferences.getFloat(VOLUME_KEY, 1f).coerceIn(0f, 1f),
+                status = if (station != null) "Gotowe" else "Wybierz stację",
+                equalizerEnabled = preferences.getBoolean(EQUALIZER_ENABLED_KEY, false),
+                equalizerPreset = preset,
+                equalizerBands = bands,
+                colorofonEnabled = preferences.getBoolean(COLOROFON_ENABLED_KEY, false),
+                colorofonIntensity = preferences.getInt(COLOROFON_INTENSITY_KEY, 0).coerceIn(-100, 100),
+                colorofonBass = preferences.getInt(COLOROFON_BASS_KEY, 70).coerceIn(0, 100),
+                colorofonMid = preferences.getInt(COLOROFON_MID_KEY, 35).coerceIn(0, 100),
+                colorofonTreble = preferences.getInt(COLOROFON_TREBLE_KEY, 45).coerceIn(0, 100),
+            )
+        }
+
+        private fun saveLastStation(context: Context, stationId: String) {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(LAST_STATION_KEY, stationId)
+                .apply()
+        }
+
+        private fun savePlaybackPreferences(context: Context, state: RadioPlayerState) {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putFloat(VOLUME_KEY, state.volume.coerceIn(0f, 1f))
+                .putBoolean(EQUALIZER_ENABLED_KEY, state.equalizerEnabled)
+                .putString(EQUALIZER_PRESET_KEY, state.equalizerPreset)
+                .putString(EQUALIZER_BANDS_KEY, state.equalizerBands.joinToString(","))
+                .putBoolean(COLOROFON_ENABLED_KEY, state.colorofonEnabled)
+                .putInt(COLOROFON_INTENSITY_KEY, state.colorofonIntensity)
+                .putInt(COLOROFON_BASS_KEY, state.colorofonBass)
+                .putInt(COLOROFON_MID_KEY, state.colorofonMid)
+                .putInt(COLOROFON_TREBLE_KEY, state.colorofonTreble)
+                .apply()
+        }
 
         fun play(context: Context, station: RadioStation) {
             Log.d(TAG, "command play: station=${station.id}")

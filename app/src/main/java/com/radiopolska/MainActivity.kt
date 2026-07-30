@@ -81,6 +81,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -160,6 +161,9 @@ private const val BACKGROUND_PLAYBACK_KEY = "background_playback_enabled"
 private const val MOBILE_WARNING_KEY = "mobile_warning_enabled"
 private const val STATION_VIEW_MODE_KEY = "station_view_mode"
 private const val STATION_SORT_MODE_KEY = "station_sort_mode"
+private const val SEARCH_QUERY_KEY = "search_query"
+private const val SELECTED_CATEGORY_KEY = "selected_category"
+private const val SELECTED_REGION_KEY = "selected_region"
 
 private enum class StationViewMode {
     List,
@@ -303,10 +307,13 @@ private fun RadioPolskaApp(
     val layout = remember(configuration.screenWidthDp, configuration.screenHeightDp) {
         adaptiveLayout(configuration.screenWidthDp, configuration.screenHeightDp)
     }
+    LaunchedEffect(context) {
+        RadioPlaybackService.restoreSavedState(context)
+    }
     val playerState by RadioPlaybackService.state.collectAsState()
-    var query by rememberSaveable { mutableStateOf("") }
-    var selectedCategory by rememberSaveable { mutableStateOf("Wszystkie") }
-    var selectedRegion by rememberSaveable { mutableStateOf("Wszystkie") }
+    var query by rememberSaveable { mutableStateOf(loadSearchQuery(context)) }
+    var selectedCategory by rememberSaveable { mutableStateOf(loadSelectedCategory(context)) }
+    var selectedRegion by rememberSaveable { mutableStateOf(loadSelectedRegion(context)) }
     var favorites by remember { mutableStateOf(loadFavorites(context)) }
     var listeningHistory by remember { mutableStateOf(loadListeningHistory(context)) }
     var backgroundPlaybackEnabled by remember { mutableStateOf(loadBackgroundPlaybackEnabled(context)) }
@@ -412,7 +419,10 @@ private fun RadioPolskaApp(
             ) {
                 StationBrowserPanel(
                     query = query,
-                    onQueryChange = { query = it },
+                    onQueryChange = {
+                        query = it
+                        saveSearchQuery(context, it)
+                    },
                     selectedCategory = selectedCategory,
                     selectedRegion = selectedRegion,
                     stations = stations,
@@ -473,7 +483,10 @@ private fun RadioPolskaApp(
                 Spacer(Modifier.height(layout.gap))
                 StationBrowserPanel(
                     query = query,
-                    onQueryChange = { query = it },
+                    onQueryChange = {
+                        query = it
+                        saveSearchQuery(context, it)
+                    },
                     selectedCategory = selectedCategory,
                     selectedRegion = selectedRegion,
                     stations = stations,
@@ -566,8 +579,14 @@ private fun RadioPolskaApp(
             selectedCategory = selectedCategory,
             selectedRegion = selectedRegion,
             selectedSortMode = stationSortMode,
-            onCategorySelected = { selectedCategory = it },
-            onRegionSelected = { selectedRegion = it },
+            onCategorySelected = {
+                selectedCategory = it
+                saveSelectedCategory(context, it)
+            },
+            onRegionSelected = {
+                selectedRegion = it
+                saveSelectedRegion(context, it)
+            },
             onSortSelected = {
                 stationSortMode = it
                 saveStationSortMode(context, it)
@@ -576,6 +595,8 @@ private fun RadioPolskaApp(
                 selectedCategory = "Wszystkie"
                 selectedRegion = "Wszystkie"
                 stationSortMode = StationSortMode.Recommended
+                saveSelectedCategory(context, selectedCategory)
+                saveSelectedRegion(context, selectedRegion)
                 saveStationSortMode(context, stationSortMode)
             },
             onBack = { activeMenuModule = MenuModule.Main },
@@ -3736,6 +3757,42 @@ private fun saveStationSortMode(context: Context, mode: StationSortMode) {
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(STATION_SORT_MODE_KEY, mode.name)
+        .apply()
+}
+
+private fun loadSearchQuery(context: Context): String =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(SEARCH_QUERY_KEY, "")
+        .orEmpty()
+
+private fun saveSearchQuery(context: Context, query: String) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(SEARCH_QUERY_KEY, query)
+        .apply()
+}
+
+private fun loadSelectedCategory(context: Context): String =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(SELECTED_CATEGORY_KEY, "Wszystkie")
+        ?: "Wszystkie"
+
+private fun saveSelectedCategory(context: Context, category: String) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(SELECTED_CATEGORY_KEY, category)
+        .apply()
+}
+
+private fun loadSelectedRegion(context: Context): String =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(SELECTED_REGION_KEY, "Wszystkie")
+        ?: "Wszystkie"
+
+private fun saveSelectedRegion(context: Context, region: String) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(SELECTED_REGION_KEY, region)
         .apply()
 }
 
